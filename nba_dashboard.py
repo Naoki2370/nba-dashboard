@@ -84,7 +84,7 @@ with tab1:
     if 'current_date' not in st.session_state:
         st.session_state.current_date = get_jst_today()
         
-    col1, col2, col3, col4 = st.columns([1, 4, 1, 1])
+    col1, col2, col3, col4, col5 = st.columns([1, 4, 1, 1, 1.5])
     
     with col1:
         if st.button("◀ 前日"):
@@ -103,8 +103,17 @@ with tab1:
         if st.button("今日に戻る"):
             st.session_state.current_date = get_jst_today()
             st.rerun()
+            
+    with col5:
+        if st.button("🔄 データを更新"):
+            st.cache_data.clear()
+            st.rerun()
 
-    favorite_teams = st.multiselect("お気に入りチームを選択（上位に表示）", options=nba_teams)
+    favorite_teams = st.multiselect(
+        "お気に入りチームを選択（上位に表示）", 
+        options=nba_teams,
+        default=["Los Angeles Lakers", "Charlotte Hornets"]
+    )
     
     # 日本時間(JST)のその日に行われる試合は、米国時間では前日の日付で管理されているため、-1日してAPIにリクエストします
     api_date_query = date_to_api_format(st.session_state.current_date - timedelta(days=1))
