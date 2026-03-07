@@ -73,7 +73,7 @@ with tab1:
     if 'current_date' not in st.session_state:
         st.session_state.current_date = get_jst_today()
         
-    col1, col2, col3 = st.columns([1, 4, 1])
+    col1, col2, col3, col4 = st.columns([1, 4, 1, 1])
     
     with col1:
         if st.button("◀ 前日"):
@@ -87,6 +87,11 @@ with tab1:
     with col3:
         if st.button("翌日 ▶"):
             st.session_state.current_date += timedelta(days=1)
+            
+    with col4:
+        if st.button("今日に戻る"):
+            st.session_state.current_date = get_jst_today()
+            st.rerun()
 
     favorite_teams = st.multiselect("お気に入りチームを選択（上位に表示）", options=nba_teams)
     
@@ -142,15 +147,18 @@ with tab1:
             
             for g in games_list:
                 with st.container(border=True):
-                    star = "⭐ " if g['is_favorite'] else ""
                     
-                    # Layout with logos
-                    c1, c2, c3 = st.columns([1, 4, 1])
+                    # Layout with logos and centered score
+                    c1, c2, c3, c4, c5 = st.columns([1, 3, 2, 3, 1])
                     with c1:
                         st.image(get_logo_url(g['visitor_id']), width=50)
                     with c2:
-                        st.markdown(f"<h3 style='text-align: center; margin-top: 10px;'>{star}{g['visitor_full']} {g['visitor_pts']} - {g['home_pts']} {g['home_full']}</h3>", unsafe_allow_html=True)
+                        st.markdown(f"<h3 style='text-align: right; margin-top: 10px;'>{g['visitor_full']}</h3>", unsafe_allow_html=True)
                     with c3:
+                        st.markdown(f"<h2 style='text-align: center; margin-top: 5px;'>{g['visitor_pts']} - {g['home_pts']}</h2>", unsafe_allow_html=True)
+                    with c4:
+                        st.markdown(f"<h3 style='text-align: left; margin-top: 10px;'>{g['home_full']}</h3>", unsafe_allow_html=True)
+                    with c5:
                         st.image(get_logo_url(g['home_id']), width=50)
                     
                     with st.expander("ボックススコアを見る"):
@@ -165,6 +173,7 @@ with tab1:
                                     # Identify starters and extract position
                                     tdf['is_starter'] = tdf['position'].apply(lambda x: pd.notna(x) and str(x).strip() != "")
                                     tdf['POS'] = tdf['position'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" else "")
+                                    tdf['NO.'] = tdf['jerseyNum'].apply(lambda x: str(x) if pd.notna(x) else "")
                                     
                                     # Rename columns to match requirements
                                     rename_dict = {
@@ -178,7 +187,7 @@ with tab1:
                                     tdf = tdf.rename(columns=rename_dict)
                                     
                                     # Ensure column order
-                                    cols = ['PLAYER_NAME', 'POS', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 
+                                    cols = ['NO.', 'PLAYER_NAME', 'POS', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 
                                             'FGM', 'FGA', 'FG%', '3PM', '3PA', '3P%', 'FTM', 'FTA', 'FT%', '+/-', 'is_starter']
                                     
                                     # Only keep columns that exist
@@ -208,7 +217,7 @@ with tab1:
                                         return styles
                                     
                                     # Drop the helper col before display
-                                    styled_df = tdf.style.apply(highlight_starters, axis=1).hide(subset=['is_starter'], axis=1)
+                                    styled_df = tdf.drop(columns=['is_starter']).style.apply(highlight_starters, axis=1).hide(axis="index")
                                     # Format percentages and floats
                                     format_dict = {
                                         'FG%': '{:.1%}', '3P%': '{:.1%}', 'FT%': '{:.1%}', '+/-': '{:+.0f}'
@@ -218,10 +227,10 @@ with tab1:
                                     return styled_df
 
                                 st.write(f"**{g['visitor_full']} Stats**")
-                                st.dataframe(format_boxscore(player_stats, g['visitor_id']), use_container_width=True)
+                                st.dataframe(format_boxscore(player_stats, g['visitor_id']), use_container_width=True, hide_index=True)
                                 
                                 st.write(f"**{g['home_full']} Stats**")
-                                st.dataframe(format_boxscore(player_stats, g['home_id']), use_container_width=True)
+                                st.dataframe(format_boxscore(player_stats, g['home_id']), use_container_width=True, hide_index=True)
                             else:
                                 st.write("スタッツデータがまだありません。")
                         except Exception as e:
@@ -261,22 +270,22 @@ with tab2:
             # Add Logo URL Column
             df['Logo'] = df['TeamID'].apply(get_logo_url)
             
-            # Rename PlayoffRank to ConferenceRank
-            df = df.rename(columns={'PlayoffRank': 'ConferenceRank'})
+            # Rename PlayoffRank to Conf Rank
+            df = df.rename(columns={'PlayoffRank': 'Conf Rank'})
                 
-            cols_to_show = ['ConferenceRank', 'Logo', 'TeamName', 'Conference', 'Record', 'WINS', 'LOSSES', 'WinPCT', 'HOME', 'ROAD', 'L10']
+            cols_to_show = ['Conf Rank', 'Logo', 'TeamName', 'Conference', 'Record', 'WINS', 'LOSSES', 'WinPCT', 'HOME', 'ROAD', 'L10']
             if streak_col:
                 cols_to_show.append(streak_col)
                 
             df_display = df[cols_to_show].copy()
             
             if conf != "All":
-                df_display['ConferenceRank'] = pd.to_numeric(df_display['ConferenceRank'])
-                df_display = df_display.sort_values('ConferenceRank')
+                df_display['Conf Rank'] = pd.to_numeric(df_display['Conf Rank'])
+                df_display = df_display.sort_values('Conf Rank')
                 df_display.reset_index(drop=True, inplace=True)
                 
                 def highlight_playoff_lines(row):
-                    rank = row['ConferenceRank']
+                    rank = row['Conf Rank']
                     styles = [''] * len(row)
                     if pd.notna(rank):
                         if rank == 6:
@@ -285,7 +294,7 @@ with tab2:
                             styles = ['border-bottom: 3px solid #F4511E !important;'] * len(row)
                     return styles
                 
-                styled_df = df_display.style.apply(highlight_playoff_lines, axis=1)
+                styled_df = df_display.style.apply(highlight_playoff_lines, axis=1).hide(axis="index")
                 
                 st.dataframe(
                     styled_df, 
@@ -293,9 +302,13 @@ with tab2:
                     column_config={
                         "Logo": st.column_config.ImageColumn(
                             "Team", help="Team Logo"
+                        ),
+                        "Conf Rank": st.column_config.NumberColumn(
+                            "Rank", width="small"
                         )
                     },
-                    use_container_width=True
+                    use_container_width=True,
+                    hide_index=True
                 )
             else:
                 st.dataframe(
@@ -304,9 +317,13 @@ with tab2:
                     column_config={
                         "Logo": st.column_config.ImageColumn(
                             "Team", help="Team Logo"
+                        ),
+                        "Conf Rank": st.column_config.NumberColumn(
+                            "Rank", width="small"
                         )
                     },
-                    use_container_width=True
+                    use_container_width=True,
+                    hide_index=True
                 )
                 
             st.caption("※青線(=6位)より上がプレーオフ直行圏内、オレンジ線(=10位)より上がプレイイン・トーナメント圏内です。")
@@ -353,14 +370,15 @@ with tab2:
                 if float_col in cols_to_disp:
                     format_dict[float_col] = '{:.1f}'
             
-            styled_disp = df_display[cols_to_disp].style.format(format_dict, na_rep="")
+            styled_disp = df_display[cols_to_disp].style.format(format_dict, na_rep="").hide(axis="index")
             
             st.dataframe(
                 styled_disp, 
                 column_config={
                     "Logo": st.column_config.ImageColumn("Team", help="Team Logo")
                 },
-                use_container_width=True
+                use_container_width=True,
+                hide_index=True
             )
             
             if stat_col == "FG3_PCT":
