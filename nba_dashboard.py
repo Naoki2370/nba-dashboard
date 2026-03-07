@@ -95,11 +95,14 @@ with tab1:
 
     favorite_teams = st.multiselect("お気に入りチームを選択（上位に表示）", options=nba_teams)
     
-    api_date = date_to_api_format(st.session_state.current_date)
-    st.subheader(f"{api_date} の試合")
+    # 日本時間(JST)のその日に行われる試合は、米国時間では前日の日付で管理されているため、-1日してAPIにリクエストします
+    api_date_query = date_to_api_format(st.session_state.current_date - timedelta(days=1))
+    display_date = st.session_state.current_date.strftime("%Y/%m/%d")
+    
+    st.subheader(f"{display_date} (日本時間) の試合")
     
     try:
-        games_df, linescores = get_scoreboard(api_date)
+        games_df, linescores = get_scoreboard(api_date_query)
         
         if games_df.empty:
             st.info("この日の試合はありません。")
