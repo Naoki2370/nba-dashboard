@@ -200,7 +200,7 @@ with tab1:
                                     # Styling function to bold starters and add bottom border to the last starter
                                     def highlight_starters(row):
                                         idx = row.name
-                                        is_starter = row['is_starter']
+                                        is_starter = tdf.loc[idx, 'is_starter']
                                         next_is_starter = False
                                         
                                         # Convert index to integer-based lookup for next row
