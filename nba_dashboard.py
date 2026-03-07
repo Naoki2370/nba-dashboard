@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
-from nba_api.stats.endpoints import scoreboardv2, boxscoretraditionalv3, leaguestandings, leagueleaders
+from nba_api.stats.endpoints import scoreboardv2, boxscoretraditionalv3, leaguestandings, leagueleaders, commonteamroster
 from nba_api.stats.static import teams
 
 st.set_page_config(page_title="NBA Stats Dashboard", layout="wide", page_icon="🏀")
@@ -42,6 +42,9 @@ def date_to_api_format(d):
 def get_logo_url(team_id):
     return f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.svg"
 
+def get_headshot_url(player_id):
+    return f"https://cdn.nba.com/headshots/nba/latest/260x190/{player_id}.png"
+
 # Caching API Calls
 @st.cache_data(ttl=600)
 def get_scoreboard(date_str):
@@ -62,6 +65,14 @@ def get_standings():
 def get_leaders(per_mode):
     leaders = leagueleaders.LeagueLeaders(per_mode48=per_mode)
     return leaders.league_leaders.get_data_frame()
+
+@st.cache_data(ttl=86400) # 1日キャッシュ
+def get_roster(team_id):
+    try:
+        roster = commonteamroster.CommonTeamRoster(team_id=team_id)
+        return roster.common_team_roster.get_data_frame()[['PLAYER_ID', 'NUM']]
+    except:
+        return pd.DataFrame(columns=['PLAYER_ID', 'NUM'])
 
 # NBA Teams List
 nba_teams = [team['full_name'] for team in teams.get_teams()]
@@ -176,7 +187,16 @@ with tab1:
                                     # Identify starters and extract position
                                     tdf['is_starter'] = tdf['position'].apply(lambda x: pd.notna(x) and str(x).strip() != "")
                                     tdf['POS'] = tdf['position'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" else "")
-                                    tdf['NO.'] = tdf['jerseyNum'].apply(lambda x: str(x) if pd.notna(x) else "")
+                                    # Merge with roster to get correct jersey number
+                                    roster_df = get_roster(team_id)
+                                    if not roster_df.empty:
+                                        tdf = pd.merge(tdf, roster_df, left_on='personId', right_on='PLAYER_ID', how='left')
+                                        tdf['NO.'] = tdf['NUM'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != 'None' else "")
+                                    else:
+                                        tdf['NO.'] = ""
+                                        
+                                    # Add Player Headshot URL
+                                    tdf['Photo'] = tdf['personId'].apply(get_headshot_url)
                                     
                                     # Rename columns to match requirements
                                     rename_dict = {
@@ -190,7 +210,7 @@ with tab1:
                                     tdf = tdf.rename(columns=rename_dict)
                                     
                                     # Ensure column order
-                                    cols = ['NO.', 'PLAYER_NAME', 'POS', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 
+                                    cols = ['NO.', 'Photo', 'PLAYER_NAME', 'POS', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 
                                             'FGM', 'FGA', 'FG%', '3PM', '3PA', '3P%', 'FTM', 'FTA', 'FT%', '+/-', 'is_starter']
                                     
                                     # Only keep columns that exist
@@ -230,10 +250,20 @@ with tab1:
                                     return styled_df
 
                                 st.write(f"**{g['visitor_full']} Stats**")
-                                st.dataframe(format_boxscore(player_stats, g['visitor_id']), use_container_width=True, hide_index=True)
+                                st.dataframe(
+                                    format_boxscore(player_stats, g['visitor_id']), 
+                                    use_container_width=True, 
+                                    hide_index=True,
+                                    column_config={"Photo": st.column_config.ImageColumn("Photo")}
+                                )
                                 
                                 st.write(f"**{g['home_full']} Stats**")
-                                st.dataframe(format_boxscore(player_stats, g['home_id']), use_container_width=True, hide_index=True)
+                                st.dataframe(
+                                    format_boxscore(player_stats, g['home_id']), 
+                                    use_container_width=True, 
+                                    hide_index=True,
+                                    column_config={"Photo": st.column_config.ImageColumn("Photo")}
+                                )
                             else:
                                 st.write("スタッツデータがまだありません。")
                         except Exception as e:
@@ -358,10 +388,13 @@ with tab2:
             # Add Logo URL Column to Leaders
             df['Logo'] = df['TEAM_ID'].apply(get_logo_url)
             
+            # Add Headshot URL Column
+            df['Photo'] = df['PLAYER_ID'].apply(get_headshot_url)
+            
             df_display = df.sort_values(by=stat_col, ascending=False).head(50)
             
             # Format percentage columns correctly if they exist
-            cols_to_disp = ['RANK', 'Logo', 'PLAYER', 'TEAM', 'GP', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'FG_PCT', 'FG3_PCT', 'FT_PCT']
+            cols_to_disp = ['RANK', 'Photo', 'Logo', 'PLAYER', 'TEAM', 'GP', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'FG_PCT', 'FG3_PCT', 'FT_PCT']
             cols_to_disp = [c for c in cols_to_disp if c in df_display.columns]
             
             # Format floats to 1 decimal place, percentages to 1 decimal place with %
@@ -378,7 +411,8 @@ with tab2:
             st.dataframe(
                 styled_disp, 
                 column_config={
-                    "Logo": st.column_config.ImageColumn("Team", help="Team Logo")
+                    "Logo": st.column_config.ImageColumn("Team", help="Team Logo"),
+                    "Photo": st.column_config.ImageColumn("Photo", help="Player Photo")
                 },
                 use_container_width=True,
                 hide_index=True
