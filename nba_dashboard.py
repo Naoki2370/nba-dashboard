@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pytz
 from nba_api.stats.endpoints import scoreboardv2, boxscoretraditionalv3, leaguestandings, leagueleaders, commonteamroster
 from nba_api.stats.static import teams
+import re
 
 st.set_page_config(page_title="NBA Stats Dashboard", layout="wide", page_icon="🏀")
 
@@ -25,6 +26,12 @@ div.css-1r6slb0.e1tzin5v2 {
     margin-bottom: 15px;
     box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
 }
+.game-time {
+    text-align: center;
+    color: #888;
+    font-size: 0.9em;
+    margin-top: -5px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -44,6 +51,46 @@ def get_logo_url(team_id):
 
 def get_headshot_url(player_id):
     return f"https://cdn.nba.com/headshots/nba/latest/260x190/{player_id}.png"
+
+def convert_et_to_jst(time_text):
+    """GAME_STATUS_TEXT の時刻文字列 (例: '7:30 PM ET') を JST に変換する。
+    時刻形式でない場合 (例: 'Final') はそのまま返す。"""
+    match = re.match(r'(\d{1,2}):(\d{2})\s*(AM|PM)\s*ET', time_text.strip(), re.IGNORECASE)
+    if not match:
+        return time_text.strip()
+    
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    ampm = match.group(3).upper()
+    
+    # 12時間制 → 24時間制
+    if ampm == 'AM' and hour == 12:
+        hour = 0
+    elif ampm == 'PM' and hour != 12:
+        hour += 12
+    
+    # ET → JST (+14時間)
+    et_tz = pytz.timezone('US/Eastern')
+    jst_tz = pytz.timezone('Asia/Tokyo')
+    
+    # 仮の日付で datetime を作成（日付をまたぐ計算のため）
+    dummy_date = datetime(2025, 1, 1, hour, minute)
+    et_time = et_tz.localize(dummy_date)
+    jst_time = et_time.astimezone(jst_tz)
+    
+    return f"{jst_time.hour}:{jst_time.minute:02d} JST"
+
+def get_game_time_display(status_text, game_status_id):
+    """試合ステータスに応じた表示文字列を返す。
+    game_status_id: 1=未開始, 2=進行中, 3=終了"""
+    if game_status_id == 3:
+        return "Final"
+    elif game_status_id == 2:
+        return "🔴 Live"
+    else:
+        # 未開始の場合、時刻を JST に変換
+        jst_time = convert_et_to_jst(status_text)
+        return jst_time
 
 # Caching API Calls
 @st.cache_data(ttl=600)
@@ -71,12 +118,83 @@ def get_roster(team_id):
     try:
         roster = commonteamroster.CommonTeamRoster(team_id=team_id)
         return roster.common_team_roster.get_data_frame()[['PLAYER_ID', 'NUM']]
-    except:
+    except Exception:
         return pd.DataFrame(columns=['PLAYER_ID', 'NUM'])
 
 # NBA Teams List
 nba_teams = [team['full_name'] for team in teams.get_teams()]
 nba_teams.sort()
+
+# --- ボックススコア整形関数（ループ外で定義） ---
+def format_boxscore(df, team_id):
+    tdf = df[df['teamId'] == team_id].copy()
+    tdf['PLAYER_NAME'] = tdf['firstName'] + " " + tdf['familyName']
+    
+    # Identify starters and extract position
+    tdf['is_starter'] = tdf['position'].apply(lambda x: pd.notna(x) and str(x).strip() != "")
+    tdf['POS'] = tdf['position'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" else "")
+    # Merge with roster to get correct jersey number
+    roster_df = get_roster(team_id)
+    if not roster_df.empty:
+        tdf = pd.merge(tdf, roster_df, left_on='personId', right_on='PLAYER_ID', how='left')
+        tdf['NO.'] = tdf['NUM'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != 'None' else "")
+    else:
+        tdf['NO.'] = ""
+        
+    # Add Player Headshot URL
+    tdf['Photo'] = tdf['personId'].apply(get_headshot_url)
+    
+    # Rename columns to match requirements
+    rename_dict = {
+        'minutes': 'MIN', 'points': 'PTS', 'reboundsTotal': 'REB', 'assists': 'AST', 
+        'steals': 'STL', 'blocks': 'BLK',
+        'fieldGoalsMade': 'FGM', 'fieldGoalsAttempted': 'FGA', 'fieldGoalsPercentage': 'FG%',
+        'threePointersMade': '3PM', 'threePointersAttempted': '3PA', 'threePointersPercentage': '3P%',
+        'freeThrowsMade': 'FTM', 'freeThrowsAttempted': 'FTA', 'freeThrowsPercentage': 'FT%',
+        'plusMinusPoints': '+/-'
+    }
+    tdf = tdf.rename(columns=rename_dict)
+    
+    # Ensure column order
+    cols = ['NO.', 'Photo', 'PLAYER_NAME', 'POS', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 
+            'FGM', 'FGA', 'FG%', '3PM', '3PA', '3P%', 'FTM', 'FTA', 'FT%', '+/-', 'is_starter']
+    
+    # Only keep columns that exist
+    cols = [c for c in cols if c in tdf.columns]
+    tdf = tdf[cols]
+    
+    # スターターをハイライトするためのデータを事前に取得
+    starter_flags = tdf['is_starter'].tolist()
+    
+    # Styling function to bold starters and add bottom border to the last starter
+    def highlight_starters(row):
+        idx = row.name
+        try:
+            row_loc = tdf.index.get_loc(idx)
+        except Exception:
+            return [''] * len(row)
+        
+        is_starter = starter_flags[row_loc]
+        next_is_starter = starter_flags[row_loc + 1] if row_loc < len(starter_flags) - 1 else False
+            
+        styles = [''] * len(row)
+        if is_starter:
+            styles = ['font-weight: bold'] * len(row)
+            # If this is the last starter, add a border
+            if not next_is_starter:
+                styles = [s + '; border-bottom: 2px solid #888888 !important;' for s in styles]
+        return styles
+    
+    # Drop the helper col before display
+    row_count = len(tdf)
+    styled_df = tdf.drop(columns=['is_starter']).style.apply(highlight_starters, axis=1).hide(axis="index")
+    # Format percentages and floats
+    format_dict = {
+        'FG%': '{:.1%}', '3P%': '{:.1%}', 'FT%': '{:.1%}', '+/-': '{:+.0f}'
+    }
+    styled_df = styled_df.format(formatter={k: v for k, v in format_dict.items() if k in tdf.columns}, na_rep="")
+    
+    return styled_df, row_count
 
 with tab1:
     st.header("試合情報一覧")
@@ -106,7 +224,8 @@ with tab1:
             
     with col5:
         if st.button("🔄 データを更新"):
-            st.cache_data.clear()
+            # 試合情報のキャッシュのみクリア（順位表・個人成績・ロスターはキャッシュを維持）
+            get_scoreboard.clear()
             st.rerun()
 
     favorite_teams = st.multiselect(
@@ -115,7 +234,11 @@ with tab1:
         default=["Los Angeles Lakers", "Charlotte Hornets"]
     )
     
-    # 日本時間(JST)のその日に行われる試合は、米国時間では前日の日付で管理されているため、-1日してAPIにリクエストします
+    # 日本時間(JST)のその日に行われる試合は、米国東部時間(ET)では前日の日付で管理されているため、
+    # -1日してAPIにリクエストします。
+    # 理由: JST = ET + 14時間。JST の1日 (00:00-23:59) は ET では前日10:00〜当日09:59に対応。
+    # NBA の試合は通常 ET の正午以降に開催されるため、-1日で正しく取得できます。
+    # (ロンドンゲーム等の早朝開催は例外となる可能性があります)
     api_date_query = date_to_api_format(st.session_state.current_date - timedelta(days=1))
     display_date = st.session_state.current_date.strftime("%Y/%m/%d")
     
@@ -128,10 +251,12 @@ with tab1:
             st.info("この日の試合はありません。")
         else:
             games_list = []
-            for index, game in games_df.iterrows():
+            for _, game in games_df.iterrows():
                 game_id = game['GAME_ID']
                 home_team_id = game['HOME_TEAM_ID']
                 visitor_team_id = game['VISITOR_TEAM_ID']
+                game_status_id = int(game.get('GAME_STATUS_ID', 1))
+                game_status_text = str(game.get('GAME_STATUS_TEXT', ''))
                 
                 home_team_data = linescores[linescores['TEAM_ID'] == home_team_id]
                 visitor_team_data = linescores[linescores['TEAM_ID'] == visitor_team_id]
@@ -146,12 +271,34 @@ with tab1:
                 visitor_full_name = f"{v_city} {v_name}".strip()
                 visitor_team_abbr = visitor_team_data['TEAM_ABBREVIATION'].values[0] if not visitor_team_data.empty else "Visitor"
                 
-                home_pts = home_team_data['PTS'].values[0] if not home_team_data.empty else "-"
-                visitor_pts = visitor_team_data['PTS'].values[0] if not visitor_team_data.empty else "-"
+                # 未開始試合はスコアを "-" 表示
+                if game_status_id == 1:
+                    home_pts = "-"
+                    visitor_pts = "-"
+                else:
+                    home_pts = home_team_data['PTS'].values[0] if not home_team_data.empty else "-"
+                    visitor_pts = visitor_team_data['PTS'].values[0] if not visitor_team_data.empty else "-"
+                    # PTS が None/NaN の場合のガード
+                    if pd.isna(home_pts):
+                        home_pts = "-"
+                    if pd.isna(visitor_pts):
+                        visitor_pts = "-"
+                    # 数値の場合は整数に変換
+                    try:
+                        home_pts = int(home_pts)
+                    except (ValueError, TypeError):
+                        pass
+                    try:
+                        visitor_pts = int(visitor_pts)
+                    except (ValueError, TypeError):
+                        pass
                 
                 is_favorite = False
                 if home_full_name in favorite_teams or visitor_full_name in favorite_teams:
                     is_favorite = True
+                
+                # 試合開始時刻を JST で取得
+                time_display = get_game_time_display(game_status_text, game_status_id)
                     
                 games_list.append({
                     'game_id': game_id,
@@ -163,7 +310,9 @@ with tab1:
                     'visitor_full': visitor_full_name,
                     'home_pts': home_pts,
                     'visitor_pts': visitor_pts,
-                    'is_favorite': is_favorite
+                    'is_favorite': is_favorite,
+                    'game_status_id': game_status_id,
+                    'time_display': time_display
                 })
             
             games_list.sort(key=lambda x: x['is_favorite'], reverse=True)
@@ -179,104 +328,46 @@ with tab1:
                         st.markdown(f"<h3 style='text-align: right; margin-top: 10px;'>{g['visitor_full']}</h3>", unsafe_allow_html=True)
                     with c3:
                         st.markdown(f"<h2 style='text-align: center; margin-top: 5px;'>{g['visitor_pts']} - {g['home_pts']}</h2>", unsafe_allow_html=True)
+                        # 試合開始時刻 or ステータスを表示
+                        st.markdown(f"<p class='game-time'>{g['time_display']}</p>", unsafe_allow_html=True)
                     with c4:
                         st.markdown(f"<h3 style='text-align: left; margin-top: 10px;'>{g['home_full']}</h3>", unsafe_allow_html=True)
                     with c5:
                         st.image(get_logo_url(g['home_id']), width=50)
                     
-                    with st.expander("ボックススコアを見る"):
-                        try:
-                            player_stats = get_boxscore(g['game_id'])
-                            
-                            if not player_stats.empty:
-                                def format_boxscore(df, team_id):
-                                    tdf = df[df['teamId'] == team_id].copy()
-                                    tdf['PLAYER_NAME'] = tdf['firstName'] + " " + tdf['familyName']
-                                    
-                                    # Identify starters and extract position
-                                    tdf['is_starter'] = tdf['position'].apply(lambda x: pd.notna(x) and str(x).strip() != "")
-                                    tdf['POS'] = tdf['position'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" else "")
-                                    # Merge with roster to get correct jersey number
-                                    roster_df = get_roster(team_id)
-                                    if not roster_df.empty:
-                                        tdf = pd.merge(tdf, roster_df, left_on='personId', right_on='PLAYER_ID', how='left')
-                                        tdf['NO.'] = tdf['NUM'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != 'None' else "")
-                                    else:
-                                        tdf['NO.'] = ""
-                                        
-                                    # Add Player Headshot URL
-                                    tdf['Photo'] = tdf['personId'].apply(get_headshot_url)
-                                    
-                                    # Rename columns to match requirements
-                                    rename_dict = {
-                                        'minutes': 'MIN', 'points': 'PTS', 'reboundsTotal': 'REB', 'assists': 'AST', 
-                                        'steals': 'STL', 'blocks': 'BLK',
-                                        'fieldGoalsMade': 'FGM', 'fieldGoalsAttempted': 'FGA', 'fieldGoalsPercentage': 'FG%',
-                                        'threePointersMade': '3PM', 'threePointersAttempted': '3PA', 'threePointersPercentage': '3P%',
-                                        'freeThrowsMade': 'FTM', 'freeThrowsAttempted': 'FTA', 'freeThrowsPercentage': 'FT%',
-                                        'plusMinusPoints': '+/-'
-                                    }
-                                    tdf = tdf.rename(columns=rename_dict)
-                                    
-                                    # Ensure column order
-                                    cols = ['NO.', 'Photo', 'PLAYER_NAME', 'POS', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 
-                                            'FGM', 'FGA', 'FG%', '3PM', '3PA', '3P%', 'FTM', 'FTA', 'FT%', '+/-', 'is_starter']
-                                    
-                                    # Only keep columns that exist
-                                    cols = [c for c in cols if c in tdf.columns]
-                                    tdf = tdf[cols]
-                                    
-                                    # Styling function to bold starters and add bottom border to the last starter
-                                    def highlight_starters(row):
-                                        idx = row.name
-                                        is_starter = tdf.loc[idx, 'is_starter']
-                                        next_is_starter = False
-                                        
-                                        # Convert index to integer-based lookup for next row
-                                        try:
-                                            row_loc = tdf.index.get_loc(idx)
-                                            if row_loc < len(tdf) - 1:
-                                                next_is_starter = tdf.iloc[row_loc + 1]['is_starter']
-                                        except:
-                                            pass
-                                            
-                                        styles = [''] * len(row)
-                                        if is_starter:
-                                            styles = ['font-weight: bold'] * len(row)
-                                            # If this is the last starter, add a border
-                                            if not next_is_starter:
-                                                styles = [s + '; border-bottom: 2px solid #888888 !important;' for s in styles]
-                                        return styles
-                                    
-                                    # Drop the helper col before display
-                                    styled_df = tdf.drop(columns=['is_starter']).style.apply(highlight_starters, axis=1).hide(axis="index")
-                                    # Format percentages and floats
-                                    format_dict = {
-                                        'FG%': '{:.1%}', '3P%': '{:.1%}', 'FT%': '{:.1%}', '+/-': '{:+.0f}'
-                                    }
-                                    styled_df = styled_df.format(formatter={k: v for k, v in format_dict.items() if k in tdf.columns}, na_rep="")
-                                    
-                                    return styled_df
-
-                                st.write(f"**{g['visitor_full']} Stats**")
-                                st.dataframe(
-                                    format_boxscore(player_stats, g['visitor_id']), 
-                                    use_container_width=True, 
-                                    hide_index=True,
-                                    column_config={"Photo": st.column_config.ImageColumn("Photo")}
-                                )
+                    # 未開始試合はボックススコアを表示しない
+                    if g['game_status_id'] != 1:
+                        with st.expander("ボックススコアを見る"):
+                            try:
+                                player_stats = get_boxscore(g['game_id'])
                                 
-                                st.write(f"**{g['home_full']} Stats**")
-                                st.dataframe(
-                                    format_boxscore(player_stats, g['home_id']), 
-                                    use_container_width=True, 
-                                    hide_index=True,
-                                    column_config={"Photo": st.column_config.ImageColumn("Photo")}
-                                )
-                            else:
-                                st.write("スタッツデータがまだありません。")
-                        except Exception as e:
-                            st.error(f"ボックススコアの取得に失敗しました: {e}")
+                                if not player_stats.empty:
+                                    st.write(f"**{g['visitor_full']} Stats**")
+                                    styled_visitor, visitor_row_count = format_boxscore(player_stats, g['visitor_id'])
+                                    # 行数に基づいて高さを動的計算（1行≒35px + ヘッダー50px + マージン20px）
+                                    visitor_height = visitor_row_count * 35 + 70
+                                    st.dataframe(
+                                        styled_visitor, 
+                                        use_container_width=True, 
+                                        hide_index=True,
+                                        height=visitor_height,
+                                        column_config={"Photo": st.column_config.ImageColumn("Photo")}
+                                    )
+                                    
+                                    st.write(f"**{g['home_full']} Stats**")
+                                    styled_home, home_row_count = format_boxscore(player_stats, g['home_id'])
+                                    home_height = home_row_count * 35 + 70
+                                    st.dataframe(
+                                        styled_home, 
+                                        use_container_width=True, 
+                                        hide_index=True,
+                                        height=home_height,
+                                        column_config={"Photo": st.column_config.ImageColumn("Photo")}
+                                    )
+                                else:
+                                    st.write("スタッツデータがまだありません。")
+                            except Exception as e:
+                                st.error(f"ボックススコアの取得に失敗しました: {e}")
                             
     except Exception as e:
         st.error(f"試合情報の取得に失敗しました: {e}")
