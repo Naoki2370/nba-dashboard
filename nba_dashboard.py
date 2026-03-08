@@ -5,6 +5,28 @@ import pytz
 from nba_api.stats.endpoints import scoreboardv2, boxscoretraditionalv3, leaguestandings, leagueleaders, commonteamroster
 from nba_api.stats.static import teams
 import re
+import time
+
+# NBA API カスタムヘッダー（stats.nba.com のレートリミット/ブロック回避）
+CUSTOM_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Referer': 'https://www.nba.com/',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Origin': 'https://www.nba.com',
+}
+API_TIMEOUT = 60  # 秒
+
+def api_call_with_retry(func, max_retries=3, *args, **kwargs):
+    """NBA API 呼び出しをリトライ付きで実行する。"""
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # 1秒, 2秒, 4秒
+                time.sleep(wait_time)
+            else:
+                raise e
 
 st.set_page_config(page_title="NBA Stats Dashboard", layout="wide", page_icon="🏀")
 
@@ -95,28 +117,36 @@ def get_game_time_display(status_text, game_status_id):
 # Caching API Calls
 @st.cache_data(ttl=600)
 def get_scoreboard(date_str):
-    board = scoreboardv2.ScoreboardV2(game_date=date_str)
-    return board.game_header.get_data_frame(), board.line_score.get_data_frame()
+    def _fetch():
+        board = scoreboardv2.ScoreboardV2(game_date=date_str, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        return board.game_header.get_data_frame(), board.line_score.get_data_frame()
+    return api_call_with_retry(_fetch)
 
 @st.cache_data(ttl=600)
 def get_boxscore(game_id):
-    boxscore = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id)
-    return boxscore.player_stats.get_data_frame()
+    def _fetch():
+        boxscore = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        return boxscore.player_stats.get_data_frame()
+    return api_call_with_retry(_fetch)
 
 @st.cache_data(ttl=600)
 def get_standings():
-    standings = leaguestandings.LeagueStandings()
-    return standings.standings.get_data_frame()
+    def _fetch():
+        standings = leaguestandings.LeagueStandings(headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        return standings.standings.get_data_frame()
+    return api_call_with_retry(_fetch)
 
 @st.cache_data(ttl=600)
 def get_leaders(per_mode):
-    leaders = leagueleaders.LeagueLeaders(per_mode48=per_mode)
-    return leaders.league_leaders.get_data_frame()
+    def _fetch():
+        leaders = leagueleaders.LeagueLeaders(per_mode48=per_mode, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        return leaders.league_leaders.get_data_frame()
+    return api_call_with_retry(_fetch)
 
 @st.cache_data(ttl=86400) # 1日キャッシュ
 def get_roster(team_id):
     try:
-        roster = commonteamroster.CommonTeamRoster(team_id=team_id)
+        roster = commonteamroster.CommonTeamRoster(team_id=team_id, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
         return roster.common_team_roster.get_data_frame()[['PLAYER_ID', 'NUM']]
     except Exception:
         return pd.DataFrame(columns=['PLAYER_ID', 'NUM'])
