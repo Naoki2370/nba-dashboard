@@ -14,6 +14,7 @@ def api_call_with_retry(func, max_retries=2, *args, **kwargs):
     """NBA API 呼び出しをリトライ付きで実行する。"""
     for attempt in range(max_retries):
         try:
+            time.sleep(0.6)  # DDOS対策: APIコール間隔をあける (キャッシュミス時のみ実行される)
             return func(*args, **kwargs)
         except Exception as e:
             if attempt < max_retries - 1:
@@ -140,6 +141,7 @@ def get_leaders(per_mode):
 @st.cache_data(ttl=86400) # 1日キャッシュ
 def get_roster(team_id):
     try:
+        time.sleep(0.6)  # DDOS対策: APIコール間隔をあける
         roster = commonteamroster.CommonTeamRoster(team_id=team_id, timeout=API_TIMEOUT)
         return roster.common_team_roster.get_data_frame()[['PLAYER_ID', 'NUM']]
     except Exception:
