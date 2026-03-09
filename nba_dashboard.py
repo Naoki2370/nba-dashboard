@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
-from nba_api.stats.endpoints import scoreboardv3, boxscoretraditionalv3, leaguestandings, leagueleaders, commonteamroster
+from nba_api.stats.endpoints import scoreboardv3, leaguestandings, leagueleaders
+from nba_api.live.nba.endpoints import boxscore
 from nba_api.stats.static import teams
 import re
 import time
@@ -120,9 +121,64 @@ def get_scoreboard(date_str):
 @st.cache_data(ttl=600)
 def get_boxscore(game_id):
     def _fetch():
-        boxscore = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id, timeout=API_TIMEOUT)
-        return boxscore.player_stats.get_data_frame()
-    return api_call_with_retry(_fetch)
+        b = boxscore.BoxScore(game_id, timeout=API_TIMEOUT)
+        d = b.get_dict()['game']
+        players = d['homeTeam']['players'] + d['awayTeam']['players']
+        records = []
+        for p in players:
+            s = p.get('statistics', {})
+            # parse PT29M06.70S format
+            minutes_raw = s.get('minutes', 'PT00M00.00S')
+            try:
+                if 'M' in minutes_raw:
+                    parts = minutes_raw.replace('PT','').replace('S','').split('M')
+                    mins = parts[0]
+                    secs = parts[1].split('.')[0] if len(parts)>1 else '00'
+                    minutes = f"{int(mins)}:{int(float(secs)):02d}"
+                else:
+                    minutes = "0:00"
+            except:
+                minutes = "0:00"
+
+            rec = {
+                'teamId': d['homeTeam']['teamId'] if p in d['homeTeam']['players'] else d['awayTeam']['teamId'],
+                'firstName': p.get('firstName', ''),
+                'familyName': p.get('familyName', ''),
+                'personId': p.get('personId', ''),
+                'jerseyNum': p.get('jerseyNum', ''),
+                'position': p.get('position', ''),
+                'minutes': minutes,
+                'fieldGoalsMade': s.get('fieldGoalsMade', 0),
+                'fieldGoalsAttempted': s.get('fieldGoalsAttempted', 0),
+                'fieldGoalsPercentage': s.get('fieldGoalsPercentage', 0.0),
+                'threePointersMade': s.get('threePointersMade', 0),
+                'threePointersAttempted': s.get('threePointersAttempted', 0),
+                'threePointersPercentage': s.get('threePointersPercentage', 0.0),
+                'freeThrowsMade': s.get('freeThrowsMade', 0),
+                'freeThrowsAttempted': s.get('freeThrowsAttempted', 0),
+                'freeThrowsPercentage': s.get('freeThrowsPercentage', 0.0),
+                'reboundsOffensive': s.get('reboundsOffensive', 0),
+                'reboundsDefensive': s.get('reboundsDefensive', 0),
+                'reboundsTotal': s.get('reboundsTotal', 0),
+                'assists': s.get('assists', 0),
+                'steals': s.get('steals', 0),
+                'blocks': s.get('blocks', 0),
+                'turnovers': s.get('turnovers', 0),
+                'foulsPersonal': s.get('foulsPersonal', 0),
+                'points': s.get('points', 0),
+                'plusMinusPoints': s.get('plusMinusPoints', 0.0)
+            }
+            records.append(rec)
+        return pd.DataFrame(records)
+        
+    # Rate Limitが無い静的JSON CDNから取得するため、DDOS対策(0.6s Sleep)を持ったapi_call_with_retryは使わない
+    for attempt in range(2):
+        try:
+            return _fetch()
+        except Exception:
+            if attempt == 1:
+                return pd.DataFrame()
+            time.sleep(1)
 
 @st.cache_data(ttl=600)
 def get_standings():
@@ -138,15 +194,6 @@ def get_leaders(per_mode):
         return leaders.league_leaders.get_data_frame()
     return api_call_with_retry(_fetch)
 
-@st.cache_data(ttl=86400) # 1日キャッシュ
-def get_roster(team_id):
-    try:
-        time.sleep(0.6)  # DDOS対策: APIコール間隔をあける
-        roster = commonteamroster.CommonTeamRoster(team_id=team_id, timeout=API_TIMEOUT)
-        return roster.common_team_roster.get_data_frame()[['PLAYER_ID', 'NUM']]
-    except Exception:
-        return pd.DataFrame(columns=['PLAYER_ID', 'NUM'])
-
 # NBA Teams List
 nba_teams = [team['full_name'] for team in teams.get_teams()]
 nba_teams.sort()
@@ -159,13 +206,8 @@ def format_boxscore(df, team_id):
     # Identify starters and extract position
     tdf['is_starter'] = tdf['position'].apply(lambda x: pd.notna(x) and str(x).strip() != "")
     tdf['POS'] = tdf['position'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" else "")
-    # Merge with roster to get correct jersey number
-    roster_df = get_roster(team_id)
-    if not roster_df.empty:
-        tdf = pd.merge(tdf, roster_df, left_on='personId', right_on='PLAYER_ID', how='left')
-        tdf['NO.'] = tdf['NUM'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != 'None' else "")
-    else:
-        tdf['NO.'] = ""
+    # Use jerseyNum natively grabbed from CDN instead of heavy get_roster mapping
+    tdf['NO.'] = tdf['jerseyNum'].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != 'None' else "")
         
     # Add Player Headshot URL
     tdf['Photo'] = tdf['personId'].apply(get_headshot_url)
@@ -555,3 +597,29 @@ with tab2:
                 
         except Exception as e:
             st.error(f"データの取得に失敗しました: {e}")
+
+# --- 前後1日分の事前キャッシュ（プリフェッチ） ---
+# ページ最下部で実行することで、現在のUI描画を妨げずにバックグラウンドに近い形で処理されます。
+# boxscore が CDN になり高速化・DDOS懸念が消滅したため安全に実行可能です。
+def prefetch_adjacent_days():
+    if 'current_date' not in st.session_state:
+        return
+    current_date = st.session_state.current_date
+    for offset in [-1, 1]:
+        target_date = current_date + timedelta(days=offset)
+        api_date = date_to_api_format(target_date)
+        try:
+            # Scoreboard のみが遅延対象（0.6s Sleep x 2日分 = 計1.2秒）
+            games_df, _ = get_scoreboard(api_date)
+            
+            # ボックススコアは CDN でミリ秒単位で終了するためスリープ対象外
+            if not games_df.empty:
+                for _, g in games_df.iterrows():
+                    # 終了済みの試合のみボックススコアを取得
+                    if g.get('gameStatus') == 3:
+                        get_boxscore(g['gameId'])
+        except Exception:
+            pass # プリフェッチ失敗時は無視して進行
+
+# 同期実行（約1.5秒程度で完了するためローディング体験を損ないません）
+prefetch_adjacent_days()
