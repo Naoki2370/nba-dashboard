@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
-from nba_api.stats.endpoints import scoreboardv2, boxscoretraditionalv3, leaguestandings, leagueleaders, commonteamroster
+from nba_api.stats.endpoints import scoreboardv3, boxscoretraditionalv3, leaguestandings, leagueleaders, commonteamroster
 from nba_api.stats.static import teams
 import re
 import time
@@ -14,16 +14,16 @@ CUSTOM_HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9',
     'Origin': 'https://www.nba.com',
 }
-API_TIMEOUT = 60  # 秒
+API_TIMEOUT = 30  # 秒
 
-def api_call_with_retry(func, max_retries=3, *args, **kwargs):
+def api_call_with_retry(func, max_retries=2, *args, **kwargs):
     """NBA API 呼び出しをリトライ付きで実行する。"""
     for attempt in range(max_retries):
         try:
             return func(*args, **kwargs)
         except Exception as e:
             if attempt < max_retries - 1:
-                wait_time = 2 ** attempt  # 1秒, 2秒, 4秒
+                wait_time = 2 ** attempt  # 1秒, 2秒
                 time.sleep(wait_time)
             else:
                 raise e
@@ -118,7 +118,7 @@ def get_game_time_display(status_text, game_status_id):
 @st.cache_data(ttl=600)
 def get_scoreboard(date_str):
     def _fetch():
-        board = scoreboardv2.ScoreboardV2(game_date=date_str, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        board = scoreboardv3.ScoreboardV3(game_date=date_str, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
         return board.game_header.get_data_frame(), board.line_score.get_data_frame()
     return api_call_with_retry(_fetch)
 
@@ -282,33 +282,39 @@ with tab1:
         else:
             games_list = []
             for _, game in games_df.iterrows():
-                game_id = game['GAME_ID']
-                home_team_id = game['HOME_TEAM_ID']
-                visitor_team_id = game['VISITOR_TEAM_ID']
-                game_status_id = int(game.get('GAME_STATUS_ID', 1))
-                game_status_text = str(game.get('GAME_STATUS_TEXT', ''))
+                game_id = game['gameId']
+                game_status_id = int(game.get('gameStatus', 1))
+                game_status_text = str(game.get('gameStatusText', ''))
                 
-                home_team_data = linescores[linescores['TEAM_ID'] == home_team_id]
-                visitor_team_data = linescores[linescores['TEAM_ID'] == visitor_team_id]
+                # V3: LineScore は gameId でフィルタし、1行目=ホーム、2行目=アウェイ
+                game_lines = linescores[linescores['gameId'] == game_id]
+                if len(game_lines) < 2:
+                    continue
                 
-                h_city = home_team_data['TEAM_CITY_NAME'].values[0] if not home_team_data.empty else ""
-                h_name = home_team_data['TEAM_NAME'].values[0] if not home_team_data.empty else ""
+                home_team_data = game_lines.iloc[0]
+                visitor_team_data = game_lines.iloc[1]
+                
+                home_team_id = home_team_data['teamId']
+                visitor_team_id = visitor_team_data['teamId']
+                
+                h_city = home_team_data.get('teamCity', '')
+                h_name = home_team_data.get('teamName', '')
                 home_full_name = f"{h_city} {h_name}".strip()
-                home_team_abbr = home_team_data['TEAM_ABBREVIATION'].values[0] if not home_team_data.empty else "Home"
+                home_team_abbr = home_team_data.get('teamTricode', 'Home')
                 
-                v_city = visitor_team_data['TEAM_CITY_NAME'].values[0] if not visitor_team_data.empty else ""
-                v_name = visitor_team_data['TEAM_NAME'].values[0] if not visitor_team_data.empty else ""
+                v_city = visitor_team_data.get('teamCity', '')
+                v_name = visitor_team_data.get('teamName', '')
                 visitor_full_name = f"{v_city} {v_name}".strip()
-                visitor_team_abbr = visitor_team_data['TEAM_ABBREVIATION'].values[0] if not visitor_team_data.empty else "Visitor"
+                visitor_team_abbr = visitor_team_data.get('teamTricode', 'Visitor')
                 
                 # 未開始試合はスコアを "-" 表示
                 if game_status_id == 1:
                     home_pts = "-"
                     visitor_pts = "-"
                 else:
-                    home_pts = home_team_data['PTS'].values[0] if not home_team_data.empty else "-"
-                    visitor_pts = visitor_team_data['PTS'].values[0] if not visitor_team_data.empty else "-"
-                    # PTS が None/NaN の場合のガード
+                    home_pts = home_team_data.get('score', '-')
+                    visitor_pts = visitor_team_data.get('score', '-')
+                    # score が None/NaN の場合のガード
                     if pd.isna(home_pts):
                         home_pts = "-"
                     if pd.isna(visitor_pts):
