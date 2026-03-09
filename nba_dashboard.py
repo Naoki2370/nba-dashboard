@@ -7,13 +7,7 @@ from nba_api.stats.static import teams
 import re
 import time
 
-# NBA API カスタムヘッダー（stats.nba.com のレートリミット/ブロック回避）
-CUSTOM_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Referer': 'https://www.nba.com/',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Origin': 'https://www.nba.com',
-}
+
 API_TIMEOUT = 30  # 秒
 
 def api_call_with_retry(func, max_retries=2, *args, **kwargs):
@@ -118,35 +112,35 @@ def get_game_time_display(status_text, game_status_id):
 @st.cache_data(ttl=600)
 def get_scoreboard(date_str):
     def _fetch():
-        board = scoreboardv3.ScoreboardV3(game_date=date_str, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        board = scoreboardv3.ScoreboardV3(game_date=date_str, timeout=API_TIMEOUT)
         return board.game_header.get_data_frame(), board.line_score.get_data_frame()
     return api_call_with_retry(_fetch)
 
 @st.cache_data(ttl=600)
 def get_boxscore(game_id):
     def _fetch():
-        boxscore = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        boxscore = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id, timeout=API_TIMEOUT)
         return boxscore.player_stats.get_data_frame()
     return api_call_with_retry(_fetch)
 
 @st.cache_data(ttl=600)
 def get_standings():
     def _fetch():
-        standings = leaguestandings.LeagueStandings(headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        standings = leaguestandings.LeagueStandings(timeout=API_TIMEOUT)
         return standings.standings.get_data_frame()
     return api_call_with_retry(_fetch)
 
 @st.cache_data(ttl=600)
 def get_leaders(per_mode):
     def _fetch():
-        leaders = leagueleaders.LeagueLeaders(per_mode48=per_mode, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        leaders = leagueleaders.LeagueLeaders(per_mode48=per_mode, timeout=API_TIMEOUT)
         return leaders.league_leaders.get_data_frame()
     return api_call_with_retry(_fetch)
 
 @st.cache_data(ttl=86400) # 1日キャッシュ
 def get_roster(team_id):
     try:
-        roster = commonteamroster.CommonTeamRoster(team_id=team_id, headers=CUSTOM_HEADERS, timeout=API_TIMEOUT)
+        roster = commonteamroster.CommonTeamRoster(team_id=team_id, timeout=API_TIMEOUT)
         return roster.common_team_roster.get_data_frame()[['PLAYER_ID', 'NUM']]
     except Exception:
         return pd.DataFrame(columns=['PLAYER_ID', 'NUM'])
