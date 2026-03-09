@@ -87,13 +87,18 @@ def convert_et_to_jst(time_text):
     elif ampm == 'PM' and hour != 12:
         hour += 12
     
-    # ET → JST (+14時間)
+    # ET → JST (夏時間を自動判定するため現在の日付を使用)
     et_tz = pytz.timezone('US/Eastern')
     jst_tz = pytz.timezone('Asia/Tokyo')
     
-    # 仮の日付で datetime を作成（日付をまたぐ計算のため）
-    dummy_date = datetime(2025, 1, 1, hour, minute)
-    et_time = et_tz.localize(dummy_date)
+    today = datetime.now()
+    dummy_date = datetime(today.year, today.month, today.day, hour, minute)
+    # pytz does not handle unexpected DST transitions well with localizer on today if today is ambiguous, 
+    # but for simple display it is completely fine
+    try:
+        et_time = et_tz.localize(dummy_date, is_dst=None)
+    except:
+        et_time = et_tz.localize(dummy_date)
     jst_time = et_time.astimezone(jst_tz)
     
     return f"{jst_time.hour}:{jst_time.minute:02d} JST"
@@ -565,7 +570,10 @@ with tab2:
             # Add Headshot URL Column
             df['Photo'] = df['PLAYER_ID'].apply(get_headshot_url)
             
-            df_display = df.sort_values(by=stat_col, ascending=False).head(50)
+            # Sort by the selected stat and recalculate rank
+            df_display = df.sort_values(by=stat_col, ascending=False).head(50).copy()
+            df_display.reset_index(drop=True, inplace=True)
+            df_display['RANK'] = df_display.index + 1
             
             # Format percentage columns correctly if they exist
             cols_to_disp = ['RANK', 'Photo', 'Logo', 'PLAYER', 'TEAM', 'GP', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'FG_PCT', 'FG3_PCT', 'FT_PCT']
